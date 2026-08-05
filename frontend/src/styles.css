@@ -1,0 +1,197 @@
+:root {
+  --navy: #102f55;
+  --blue: #1f5f99;
+  --gold: #b67818;
+  --bg: #f7f9fb;
+  --text: #17202a;
+  --muted: #5d6d7e;
+  --danger: #8f2d2d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Aptos", "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.muted.small {
+  font-size: 0.85rem;
+  margin-top: 20px;
+}
+
+.error {
+  color: var(--danger);
+}
+
+/* ---- Respond view ---- */
+
+.wrap {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 24px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.wrap h1 {
+  font-size: clamp(1.15rem, 3.5vw, 1.6rem);
+  line-height: 1.35;
+  color: var(--navy);
+  margin: 0 0 32px;
+}
+
+.scale {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 32px;
+}
+
+.anchors-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.points {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.point {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--blue);
+  background: white;
+  color: var(--blue);
+  font-size: 1.05rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.point:hover {
+  background: #eef6ff;
+}
+
+.point.selected {
+  background: var(--blue);
+  color: white;
+}
+
+.submit {
+  align-self: flex-start;
+  background: var(--navy);
+  color: white;
+  border: none;
+  padding: 12px 28px;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.submit:disabled {
+  background: #b7c2cf;
+  cursor: not-allowed;
+}
+
+.submit:not(:disabled):hover {
+  background: var(--blue);
+}
+
+.aggregate {
+  margin-top: 24px;
+}
+
+/* ---- Shared bar chart (respond aggregate + control view) ---- */
+
+.bars {
+  margin-top: 16px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.bar-label {
+  width: 16px;
+  font-weight: 700;
+  color: var(--navy);
+}
+
+.bar-track {
+  flex: 1;
+  height: 22px;
+  background: #e6ecf2;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--gold);
+  transition: width 0.4s ease;
+}
+
+.bar-count {
+  width: 28px;
+  text-align: right;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* ---- Control view ---- */
+/* Reuses .wrap from the respond view — a single activity, single screen,
+   no picker. Revisit if/when the Option A multi-activity shell is built. */
+
+.controls {
+  display: flex;
+  gap: 12px;
+  margin: 24px 0;
+}
+
+.controls button {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--navy);
+  color: white;
+}
+
+.controls button:hover {
+  background: var(--blue);
+}
+
+.controls button.danger {
+  background: white;
+  color: var(--danger);
+  border: 1.5px solid var(--danger);
+}
+
+.controls button.danger:hover {
+  background: #f7e9e9;
+}
