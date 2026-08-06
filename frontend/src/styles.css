@@ -97,6 +97,22 @@ body {
   color: white;
 }
 
+.point:disabled {
+  cursor: default;
+}
+
+.point:disabled:hover {
+  background: white;
+}
+
+.point.selected:disabled:hover {
+  background: var(--blue);
+}
+
+.confirmation {
+  margin-top: 4px;
+}
+
 .submit {
   align-self: flex-start;
   background: var(--navy);

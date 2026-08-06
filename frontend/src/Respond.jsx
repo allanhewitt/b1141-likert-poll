@@ -26,8 +26,10 @@ export default function Respond() {
       .then(setConfig)
       .catch((e) => setError(e.message));
 
-    if (localStorage.getItem(`likert-submitted-${id}`)) {
+    const storedValue = localStorage.getItem(`likert-submitted-${id}`);
+    if (storedValue) {
       setSubmitted(true);
+      setSelected(Number(storedValue));
     }
   }, [id]);
 
@@ -53,7 +55,7 @@ export default function Respond() {
       body: JSON.stringify({ value: selected }),
     });
     if (res.ok) {
-      localStorage.setItem(`likert-submitted-${id}`, "1");
+      localStorage.setItem(`likert-submitted-${id}`, String(selected));
       setSubmitted(true);
     }
   };
@@ -74,22 +76,6 @@ export default function Respond() {
     );
   }
 
-  if (submitted) {
-    return (
-      <div className="wrap">
-        <h1>{config.statement}</h1>
-        <p className="muted">Thanks — your response has been recorded.</p>
-        {aggregate?.revealed ? (
-          <AggregateView aggregate={aggregate} />
-        ) : (
-          <p className="muted">
-            Results will appear once enough of the class has responded.
-          </p>
-        )}
-      </div>
-    );
-  }
-
   const points = Array.from({ length: config.scale_points }, (_, i) => i + 1);
 
   return (
@@ -106,7 +92,8 @@ export default function Respond() {
               key={p}
               type="button"
               className={`point${selected === p ? " selected" : ""}`}
-              onClick={() => setSelected(p)}
+              onClick={() => !submitted && setSelected(p)}
+              disabled={submitted}
               aria-pressed={selected === p}
             >
               {p}
@@ -114,9 +101,23 @@ export default function Respond() {
           ))}
         </div>
       </div>
-      <button className="submit" disabled={selected === null} onClick={submit}>
-        Submit
-      </button>
+
+      {submitted ? (
+        <div className="confirmation">
+          <p className="muted">Thanks — your response has been recorded.</p>
+          {aggregate?.revealed ? (
+            <AggregateView aggregate={aggregate} />
+          ) : (
+            <p className="muted">
+              Results will appear once enough of the class has responded.
+            </p>
+          )}
+        </div>
+      ) : (
+        <button className="submit" disabled={selected === null} onClick={submit}>
+          Submit
+        </button>
+      )}
     </div>
   );
 }
