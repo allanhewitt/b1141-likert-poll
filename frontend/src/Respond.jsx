@@ -3,13 +3,27 @@ import { useParams } from "react-router-dom";
 
 const API = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 
+// One anonymous token per browser, reused across every poll. Not an
+// identity — just enough for the backend to recognise "this is the same
+// respondent revising an earlier answer" within a live session.
+function getToken() {
+  let token = localStorage.getItem("likert-token");
+  if (!token) {
+    token = crypto.randomUUID();
+    localStorage.setItem("likert-token", token);
+  }
+  return token;
+}
+
 export default function Respond() {
   const { id } = useParams();
   const [config, setConfig] = useState(null);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
   const [submitted, setSubmitted] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [aggregate, setAggregate] = useState(null);
+  const [token] = useState(getToken);
 
   useEffect(() => {
     fetch(`${API}/api/config/likert/${id}`)
@@ -26,7 +40,7 @@ export default function Respond() {
       .then(setConfig)
       .catch((e) => setError(e.message));
 
-    const storedValue = localStorage.getItem(`likert-submitted-${id}`);
+    const storedValue = localStorage.getItem(`likert-value-${id}`);
     if (storedValue) {
       setSubmitted(true);
       setSelected(Number(storedValue));
@@ -52,11 +66,12 @@ export default function Respond() {
     const res = await fetch(`${API}/api/response/likert/${id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value: selected }),
+      body: JSON.stringify({ value: selected, token }),
     });
     if (res.ok) {
-      localStorage.setItem(`likert-submitted-${id}`, String(selected));
+      localStorage.setItem(`likert-value-${id}`, String(selected));
       setSubmitted(true);
+      setEditing(false);
     }
   };
 
@@ -77,6 +92,7 @@ export default function Respond() {
   }
 
   const points = Array.from({ length: config.scale_points }, (_, i) => i + 1);
+  const locked = submitted && !editing;
 
   return (
     <div className="wrap">
@@ -92,8 +108,8 @@ export default function Respond() {
               key={p}
               type="button"
               className={`point${selected === p ? " selected" : ""}`}
-              onClick={() => !submitted && setSelected(p)}
-              disabled={submitted}
+              onClick={() => !locked && setSelected(p)}
+              disabled={locked}
               aria-pressed={selected === p}
             >
               {p}
@@ -102,20 +118,29 @@ export default function Respond() {
         </div>
       </div>
 
-      {submitted ? (
-        <div className="confirmation">
-          <p className="muted">Thanks — your response has been recorded.</p>
-          {aggregate?.revealed ? (
-            <AggregateView aggregate={aggregate} />
-          ) : (
-            <p className="muted">
-              Results will appear once enough of the class has responded.
-            </p>
-          )}
-        </div>
+      {locked ? (
+        <>
+          <div className="confirmation">
+            <p className="muted">Thanks — your response has been recorded.</p>
+            {aggregate?.revealed ? (
+              <AggregateView aggregate={aggregate} />
+            ) : (
+              <p className="muted">
+                Results will appear once enough of the class has responded.
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="change-mind"
+            onClick={() => setEditing(true)}
+          >
+            Change your mind?
+          </button>
+        </>
       ) : (
         <button className="submit" disabled={selected === null} onClick={submit}>
-          Submit
+          {submitted ? "Update response" : "Submit"}
         </button>
       )}
     </div>

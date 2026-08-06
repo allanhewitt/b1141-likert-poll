@@ -35,11 +35,16 @@ const PERSIST_RESPONSES = process.env.PERSIST_RESPONSES === "true";
 // Drives the dashboard's "this lecture, right now" view regardless of
 // PERSIST_RESPONSES. Cleared on backend restart and by the lecturer's
 // "clear session" control. Never the source of truth for persisted data.
+//
+// responses is keyed by an anonymous per-browser token (not identity —
+// just enough to recognise "this is the same person revising their
+// answer" within one session), so a revised submission replaces the
+// live count rather than being added alongside the original.
 const sessionStore = new Map();
 
 function getSession(id) {
   if (!sessionStore.has(id)) {
-    sessionStore.set(id, { responses: [], revealed: false });
+    sessionStore.set(id, { responses: {}, revealed: false });
   }
   return sessionStore.get(id);
 }
@@ -99,26 +104,34 @@ app.get("/api/config/likert/:id", async (req, res) => {
   res.json(serializeActivity(row));
 });
 
-// ---- Submit a response ----
+// ---- Submit a response (initial or revised) ----
 app.post("/api/response/likert/:id", async (req, res) => {
   const row = await findActivity(req.params.id);
   if (!row) return res.status(404).json({ error: "Unknown activity" });
-  const { value } = req.body;
+  const { value, token } = req.body;
   if (!Number.isInteger(value) || value < 1 || value > row.scale_points) {
     return res.status(400).json({ error: "Invalid value" });
   }
+  if (typeof token !== "string" || token.length < 8) {
+    return res.status(400).json({ error: "Missing or invalid token" });
+  }
 
   const session = getSession(req.params.id);
-  session.responses.push(value);
+  // Overwrites any earlier value from this same token — the live
+  // aggregate always reflects each respondent's current answer only.
+  session.responses[token] = value;
 
   if (PERSIST_RESPONSES) {
+    // Every submission — initial or revised — gets its own permanent
+    // row. Grouping by respondent_token later shows whether and how
+    // someone changed their mind; nothing here overwrites history.
     await pool.query(
-      "INSERT INTO responses (activity_id, value) VALUES ($1, $2)",
-      [req.params.id, value]
+      "INSERT INTO responses (activity_id, respondent_token, value) VALUES ($1, $2, $3)",
+      [req.params.id, token, value]
     );
   }
 
-  res.json({ ok: true, count: session.responses.length });
+  res.json({ ok: true, count: Object.keys(session.responses).length });
 });
 
 // ---- Aggregate (respond view once revealed, and the control view) ----
@@ -127,9 +140,10 @@ app.get("/api/aggregate/likert/:id", async (req, res) => {
   if (!row) return res.status(404).json({ error: "Unknown activity" });
   const session = getSession(req.params.id);
 
+  const values = Object.values(session.responses);
   const counts = Array.from({ length: row.scale_points }, () => 0);
-  session.responses.forEach((v) => counts[v - 1]++);
-  const total = session.responses.length;
+  values.forEach((v) => counts[v - 1]++);
+  const total = values.length;
 
   const thresholdMet =
     !!row.cohort_size &&
@@ -152,7 +166,7 @@ app.post("/api/session/:id/reveal", (req, res) => {
 // Clears only the live in-memory view for this lecture. Does not touch
 // any persisted rows in `responses` — those are the permanent record.
 app.post("/api/session/:id/clear", (req, res) => {
-  sessionStore.set(req.params.id, { responses: [], revealed: false });
+  sessionStore.set(req.params.id, { responses: {}, revealed: false });
   res.json({ ok: true });
 });
 

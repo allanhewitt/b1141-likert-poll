@@ -113,6 +113,22 @@ body {
   margin-top: 4px;
 }
 
+.change-mind {
+  align-self: flex-start;
+  margin-top: 20px;
+  background: none;
+  border: none;
+  color: var(--blue);
+  font-size: 0.9rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.change-mind:hover {
+  color: var(--navy);
+}
+
 .submit {
   align-self: flex-start;
   background: var(--navy);
