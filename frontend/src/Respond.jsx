@@ -6,10 +6,31 @@ const API = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 // One anonymous token per browser, reused across every poll. Not an
 // identity — just enough for the backend to recognise "this is the same
 // respondent revising an earlier answer" within a live session.
+//
+// crypto.randomUUID() only works in a "secure context" (HTTPS, or
+// localhost) — it throws on a plain http:// sslip.io deployment like
+// this one, which blanks the whole page. Fall back to a manual random
+// ID when it's unavailable, so this works before a real domain/SSL is
+// set up too.
+function generateId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // fall through to the manual generator below
+    }
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function getToken() {
   let token = localStorage.getItem("likert-token");
   if (!token) {
-    token = crypto.randomUUID();
+    token = generateId();
     localStorage.setItem("likert-token", token);
   }
   return token;
