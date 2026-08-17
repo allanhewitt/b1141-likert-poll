@@ -130,13 +130,8 @@ export default function Respond() {
     }
   };
 
-  if (error) {
-    return <div className="wrap"><p className="error">{error}</p></div>;
-  }
-
-  if (!config) {
-    return <div className="wrap"><p className="muted">Loading…</p></div>;
-  }
+  if (error) return <div className="wrap"><p className="error">{error}</p></div>;
+  if (!config) return <div className="wrap"><p className="muted">Loading…</p></div>;
 
   const points = Array.from({ length: config.scale_points }, (_, i) => i + 1);
   const locked = submitted && !editing;
@@ -178,7 +173,7 @@ export default function Respond() {
             </div>
 
             {aggregate?.revealed ? (
-              <AggregateView aggregate={aggregate} prediction={prediction} />
+              <AggregateView aggregate={aggregate} prediction={prediction} selected={selected} />
             ) : (
               <div className="anticipation-hold">
                 <strong>Locked in.</strong>
@@ -187,11 +182,7 @@ export default function Respond() {
             )}
           </div>
 
-          <button
-            type="button"
-            className="change-mind"
-            onClick={() => setEditing(true)}
-          >
+          <button type="button" className="change-mind" onClick={() => setEditing(true)}>
             {aggregate?.revealed ? "Change your own view?" : "Change your answers?"}
           </button>
         </>
@@ -249,9 +240,12 @@ function ScaleQuestion({ number, label, hint, value, setValue, points, anchors, 
   );
 }
 
-function AggregateView({ aggregate, prediction }) {
-  const actualMean = aggregate.mean;
-  const distance = actualMean == null ? null : Math.abs(prediction - actualMean);
+function AggregateView({ aggregate, prediction, selected }) {
+  const restMean =
+    aggregate.total > 1 && aggregate.mean != null
+      ? ((aggregate.mean * aggregate.total) - selected) / (aggregate.total - 1)
+      : null;
+  const distance = restMean == null ? null : Math.abs(prediction - restMean);
 
   return (
     <div className="aggregate reveal-panel">
@@ -265,7 +259,7 @@ function AggregateView({ aggregate, prediction }) {
 
       <div className="personal-comparison">
         <div><span>You predicted</span><strong>{prediction}</strong></div>
-        <div><span>Class average</span><strong>{actualMean == null ? "—" : Number(actualMean).toFixed(1)}</strong></div>
+        <div><span>Rest-of-class average</span><strong>{restMean == null ? "—" : restMean.toFixed(1)}</strong></div>
         <div><span>Prediction gap</span><strong>{distance == null ? "—" : `${distance.toFixed(1)} pts`}</strong></div>
       </div>
 
