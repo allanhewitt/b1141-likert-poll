@@ -8,10 +8,6 @@ const app = express();
 app.use(express.json());
 
 // --- CORS ---
-// Known bug from the dummy project: naively splitting ALLOWED_ORIGINS on
-// "," turns the literal wildcard "*" into the array ["*"], which the cors
-// package does NOT treat as "allow everything" — only the literal string
-// "*" does that. Handle the wildcard case explicitly.
 const rawOrigins = (process.env.ALLOWED_ORIGINS || "").trim();
 const corsOrigin =
   rawOrigins === "*"
@@ -24,22 +20,26 @@ app.use(cors({ origin: corsOrigin }));
 // --- Postgres ---
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// Whether to also write each response to Postgres (permanent, per-year
-// retained record) alongside the in-memory live session. Off leaves the
-// system exactly as ephemeral as the pre-approval position required; on
-// matches the established per-year-database convention. One flag, one
-// place, so this is a one-line reversal either direction.
+// Every Likert response now contains two linked judgements:
+//   1. the student's own position;
+//   2. their prediction of where the class overall will land.
+// The startup migration keeps existing deployments compatible without a
+// manual database step. Existing historical rows simply have NULL prediction.
+async function ensureSchema() {
+  await pool.query(
+    "ALTER TABLE responses ADD COLUMN IF NOT EXISTS predicted_value INTEGER"
+  );
+}
+
+// Whether to also write each response to Postgres alongside the in-memory
+// live session. The live session remains the source for the classroom display.
 const PERSIST_RESPONSES = process.env.PERSIST_RESPONSES === "true";
 
 // --- In-memory live session store ---
-// Drives the dashboard's "this lecture, right now" view regardless of
-// PERSIST_RESPONSES. Cleared on backend restart and by the lecturer's
-// "clear session" control. Never the source of truth for persisted data.
-//
-// responses is keyed by an anonymous per-browser token (not identity —
-// just enough to recognise "this is the same person revising their
-// answer" within one session), so a revised submission replaces the
-// live count rather than being added alongside the original.
+// responses is keyed by an anonymous activity-scoped browser token. A revised
+// own-view submission replaces that token's live position while retaining the
+// originally supplied class prediction unless the student changes it before
+// results have been revealed.
 const sessionStore = new Map();
 
 function getSession(id) {
@@ -64,6 +64,7 @@ function serializeActivity(row) {
     statement: row.statement,
     scale_points: row.scale_points,
     anchors: { low: row.anchor_low, high: row.anchor_high },
+    prediction_prompt: "Where do you think the rest of the class will land overall?",
     reveal_mode: row.reveal_mode,
     reveal_threshold: row.reveal_threshold,
     cohort_size: row.cohort_size,
@@ -96,7 +97,7 @@ app.get("/api/config/likert", async (req, res) => {
   res.json(rows.map(serializeActivity));
 });
 
-// ---- Config: single instance (respond view) ----
+// ---- Config: single instance ----
 app.get("/api/config/likert/:id", async (req, res) => {
   const row = await findActivity(req.params.id);
   if (!row) return res.status(404).json({ error: "Not found" });
@@ -104,46 +105,75 @@ app.get("/api/config/likert/:id", async (req, res) => {
   res.json(serializeActivity(row));
 });
 
-// ---- Submit a response (initial or revised) ----
+// ---- Submit a paired response (own view + class prediction) ----
 app.post("/api/response/likert/:id", async (req, res) => {
   const row = await findActivity(req.params.id);
   if (!row) return res.status(404).json({ error: "Unknown activity" });
-  const { value, token } = req.body;
-  if (!Number.isInteger(value) || value < 1 || value > row.scale_points) {
-    return res.status(400).json({ error: "Invalid value" });
+
+  const { value, prediction, token } = req.body;
+  const validPoint = (v) =>
+    Number.isInteger(v) && v >= 1 && v <= row.scale_points;
+
+  if (!validPoint(value)) {
+    return res.status(400).json({ error: "Invalid own-view value" });
+  }
+  if (!validPoint(prediction)) {
+    return res.status(400).json({ error: "Invalid class prediction" });
   }
   if (typeof token !== "string" || token.length < 8) {
     return res.status(400).json({ error: "Missing or invalid token" });
   }
 
   const session = getSession(req.params.id);
-  // Overwrites any earlier value from this same token — the live
-  // aggregate always reflects each respondent's current answer only.
-  session.responses[token] = value;
+  const existing = session.responses[token];
+
+  // Once the class reveal has happened, the prediction is epistemically
+  // committed: students may reconsider their own view, but cannot rewrite
+  // what they had expected the room to think after seeing the answer.
+  const committedPrediction =
+    session.revealed && existing ? existing.prediction : prediction;
+
+  session.responses[token] = {
+    value,
+    prediction: committedPrediction,
+  };
 
   if (PERSIST_RESPONSES) {
-    // Every submission — initial or revised — gets its own permanent
-    // row. Grouping by respondent_token later shows whether and how
-    // someone changed their mind; nothing here overwrites history.
     await pool.query(
-      "INSERT INTO responses (activity_id, respondent_token, value) VALUES ($1, $2, $3)",
-      [req.params.id, token, value]
+      "INSERT INTO responses (activity_id, respondent_token, value, predicted_value) VALUES ($1, $2, $3, $4)",
+      [req.params.id, token, value, committedPrediction]
     );
   }
 
-  res.json({ ok: true, count: Object.keys(session.responses).length });
+  res.json({
+    ok: true,
+    count: Object.keys(session.responses).length,
+    prediction: committedPrediction,
+  });
 });
 
-// ---- Aggregate (respond view once revealed, and the control view) ----
+// ---- Aggregate: actual class positions + predicted class positions ----
 app.get("/api/aggregate/likert/:id", async (req, res) => {
   const row = await findActivity(req.params.id);
   if (!row) return res.status(404).json({ error: "Unknown activity" });
   const session = getSession(req.params.id);
 
-  const values = Object.values(session.responses);
+  const responses = Object.values(session.responses);
   const counts = Array.from({ length: row.scale_points }, () => 0);
-  values.forEach((v) => counts[v - 1]++);
-  const total = values.length;
+  const predictionCounts = Array.from({ length: row.scale_points }, () => 0);
+
+  let valueSum = 0;
+  let predictionSum = 0;
+  responses.forEach(({ value, prediction }) => {
+    counts[value - 1]++;
+    predictionCounts[prediction - 1]++;
+    valueSum += value;
+    predictionSum += prediction;
+  });
+
+  const total = responses.length;
+  const mean = total ? valueSum / total : null;
+  const predictionMean = total ? predictionSum / total : null;
 
   const thresholdMet =
     !!row.cohort_size &&
@@ -154,7 +184,20 @@ app.get("/api/aggregate/likert/:id", async (req, res) => {
   else if (row.reveal_mode === "threshold") revealed = thresholdMet || session.revealed;
   else if (row.reveal_mode === "manual") revealed = session.revealed;
 
-  res.json({ id: req.params.id, total, counts, revealed, thresholdMet });
+  // Keep the session's committed reveal state in sync with automatic modes so
+  // predictions also become immutable the moment students can see results.
+  if (revealed) session.revealed = true;
+
+  res.json({
+    id: req.params.id,
+    total,
+    counts,
+    prediction_counts: predictionCounts,
+    mean,
+    prediction_mean: predictionMean,
+    revealed,
+    thresholdMet,
+  });
 });
 
 // ---- Lecturer controls ----
@@ -163,14 +206,23 @@ app.post("/api/session/:id/reveal", (req, res) => {
   res.json({ ok: true });
 });
 
-// Clears only the live in-memory view for this lecture. Does not touch
-// any persisted rows in `responses` — those are the permanent record.
 app.post("/api/session/:id/clear", (req, res) => {
   sessionStore.set(req.params.id, { responses: {}, revealed: false });
   res.json({ ok: true });
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true, persisting: PERSIST_RESPONSES }));
+app.get("/api/health", (req, res) =>
+  res.json({ ok: true, persisting: PERSIST_RESPONSES })
+);
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`Likert API listening on :${PORT} (persist=${PERSIST_RESPONSES})`));
+ensureSchema()
+  .then(() => {
+    app.listen(PORT, () =>
+      console.log(`Likert API listening on :${PORT} (persist=${PERSIST_RESPONSES})`)
+    );
+  })
+  .catch((err) => {
+    console.error("Failed to initialise Likert schema", err);
+    process.exit(1);
+  });
