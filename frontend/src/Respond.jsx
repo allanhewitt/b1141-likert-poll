@@ -2,10 +2,12 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 
 const API = import.meta.env.VITE_API_BASE || "http://localhost:4000";
+const TOKEN_TTL_MS = 10 * 60 * 1000;
 
-// One anonymous token per browser, reused across every poll. Not an
-// identity — just enough for the backend to recognise "this is the same
-// respondent revising an earlier answer" within a live session.
+// Anonymous browser tokens are scoped to one activity and expire after
+// 10 minutes away from that activity. This is enough to survive a refresh
+// during a short classroom task without creating a persistent cross-activity
+// browser identifier.
 //
 // crypto.randomUUID() only works in a "secure context" (HTTPS, or
 // localhost) — it throws on a plain http:// sslip.io deployment like
@@ -27,12 +29,40 @@ function generateId() {
   });
 }
 
+function currentActivityId() {
+  const parts = (window.location.hash || "").split("/").filter(Boolean);
+  return parts[parts.length - 1] || "unknown-activity";
+}
+
 function getToken() {
-  let token = localStorage.getItem("likert-token");
-  if (!token) {
-    token = generateId();
-    localStorage.setItem("likert-token", token);
+  const activityId = currentActivityId();
+  const storageKey = `gedl:${activityId}:participant`;
+  const now = Date.now();
+  let stored = null;
+
+  try {
+    stored = JSON.parse(localStorage.getItem(storageKey));
+  } catch {
+    stored = null;
   }
+
+  if (
+    stored?.token &&
+    Number.isFinite(stored.lastSeen) &&
+    now - stored.lastSeen < TOKEN_TTL_MS
+  ) {
+    localStorage.setItem(storageKey, JSON.stringify({ token: stored.token, lastSeen: now }));
+    return stored.token;
+  }
+
+  const token = generateId();
+  localStorage.setItem(storageKey, JSON.stringify({ token, lastSeen: now }));
+
+  // Remove the former app-wide identifier and any stale cached answer for
+  // this activity whenever a fresh anonymous activity session begins.
+  localStorage.removeItem("likert-token");
+  localStorage.removeItem(`likert-value-${activityId}`);
+
   return token;
 }
 
