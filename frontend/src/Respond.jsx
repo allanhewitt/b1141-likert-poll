@@ -4,22 +4,12 @@ import { useParams } from "react-router-dom";
 const API = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
-// Anonymous browser tokens are scoped to one activity and expire after
-// 10 minutes away from that activity. This is enough to survive a refresh
-// during a short classroom task without creating a persistent cross-activity
-// browser identifier.
-//
-// crypto.randomUUID() only works in a "secure context" (HTTPS, or
-// localhost) — it throws on a plain http:// sslip.io deployment like
-// this one, which blanks the whole page. Fall back to a manual random
-// ID when it's unavailable, so this works before a real domain/SSL is
-// set up too.
 function generateId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     try {
       return crypto.randomUUID();
     } catch {
-      // fall through to the manual generator below
+      // fall through
     }
   }
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -57,12 +47,9 @@ function getToken() {
 
   const token = generateId();
   localStorage.setItem(storageKey, JSON.stringify({ token, lastSeen: now }));
-
-  // Remove the former app-wide identifier and any stale cached answer for
-  // this activity whenever a fresh anonymous activity session begins.
   localStorage.removeItem("likert-token");
   localStorage.removeItem(`likert-value-${activityId}`);
-
+  localStorage.removeItem(`likert-response-${activityId}`);
   return token;
 }
 
@@ -71,6 +58,7 @@ export default function Respond() {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [prediction, setPrediction] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [editing, setEditing] = useState(false);
   const [aggregate, setAggregate] = useState(null);
@@ -91,10 +79,18 @@ export default function Respond() {
       .then(setConfig)
       .catch((e) => setError(e.message));
 
-    const storedValue = localStorage.getItem(`likert-value-${id}`);
-    if (storedValue) {
-      setSubmitted(true);
-      setSelected(Number(storedValue));
+    try {
+      const stored = JSON.parse(localStorage.getItem(`likert-response-${id}`));
+      if (Number.isInteger(stored?.value) && Number.isInteger(stored?.prediction)) {
+        setSelected(stored.value);
+        setPrediction(stored.prediction);
+        setSubmitted(true);
+      } else {
+        const legacyValue = Number(localStorage.getItem(`likert-value-${id}`));
+        if (Number.isInteger(legacyValue) && legacyValue > 0) setSelected(legacyValue);
+      }
+    } catch {
+      // Ignore malformed local state.
     }
   }, [id]);
 
@@ -113,100 +109,173 @@ export default function Respond() {
   }, [submitted, fetchAggregate]);
 
   const submit = async () => {
-    if (selected === null) return;
+    if (selected === null || prediction === null) return;
     const res = await fetch(`${API}/api/response/likert/${id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value: selected, token }),
+      body: JSON.stringify({ value: selected, prediction, token }),
     });
     if (res.ok) {
+      const data = await res.json();
+      const committedPrediction = data.prediction ?? prediction;
+      setPrediction(committedPrediction);
+      localStorage.setItem(
+        `likert-response-${id}`,
+        JSON.stringify({ value: selected, prediction: committedPrediction })
+      );
       localStorage.setItem(`likert-value-${id}`, String(selected));
       setSubmitted(true);
       setEditing(false);
+      fetchAggregate();
     }
   };
 
-  if (error) {
-    return (
-      <div className="wrap">
-        <p className="error">{error}</p>
-      </div>
-    );
-  }
-
-  if (!config) {
-    return (
-      <div className="wrap">
-        <p className="muted">Loading…</p>
-      </div>
-    );
-  }
+  if (error) return <div className="wrap"><p className="error">{error}</p></div>;
+  if (!config) return <div className="wrap"><p className="muted">Loading…</p></div>;
 
   const points = Array.from({ length: config.scale_points }, (_, i) => i + 1);
   const locked = submitted && !editing;
+  const predictionLockedByReveal = Boolean(aggregate?.revealed);
 
   return (
-    <div className="wrap">
+    <div className="wrap respond-wrap">
+      <div className="activity-kicker">B1141 · Week {config.week}</div>
       <h1>{config.statement}</h1>
-      <div className="scale">
+
+      <ScaleQuestion
+        number="1"
+        label="What do you think?"
+        value={selected}
+        setValue={setSelected}
+        points={points}
+        anchors={config.anchors}
+        disabled={locked}
+      />
+
+      <ScaleQuestion
+        number="2"
+        label={config.prediction_prompt}
+        hint="Use the same scale to predict the class's overall position."
+        value={prediction}
+        setValue={setPrediction}
+        points={points}
+        anchors={config.anchors}
+        disabled={locked || predictionLockedByReveal}
+        prediction
+      />
+
+      {locked ? (
+        <>
+          <div className="confirmation">
+            <div className="commit-summary">
+              <div><span>Your view</span><strong>{selected}</strong></div>
+              <div><span>Your class prediction</span><strong>{prediction}</strong></div>
+            </div>
+
+            {aggregate?.revealed ? (
+              <AggregateView aggregate={aggregate} prediction={prediction} selected={selected} />
+            ) : (
+              <div className="anticipation-hold">
+                <strong>Locked in.</strong>
+                <span>Now see whether the class lands where you expected.</span>
+              </div>
+            )}
+          </div>
+
+          <button type="button" className="change-mind" onClick={() => setEditing(true)}>
+            {aggregate?.revealed ? "Change your own view?" : "Change your answers?"}
+          </button>
+        </>
+      ) : (
+        <>
+          {submitted && aggregate?.revealed && (
+            <p className="prediction-lock-note">
+              Your class prediction is now locked because the class result has been revealed.
+            </p>
+          )}
+          <button
+            className="submit"
+            disabled={selected === null || prediction === null}
+            onClick={submit}
+          >
+            {submitted ? "Update my view" : "Lock in both answers"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ScaleQuestion({ number, label, hint, value, setValue, points, anchors, disabled, prediction = false }) {
+  return (
+    <section className={`question-block${prediction ? " prediction-block" : ""}`}>
+      <div className="question-heading">
+        <span className="question-number">{number}</span>
+        <div>
+          <h2>{label}</h2>
+          {hint && <p>{hint}</p>}
+        </div>
+      </div>
+      <div className="scale compact-scale">
         <div className="anchors-top">
-          <span>{config.anchors.low}</span>
-          <span>{config.anchors.high}</span>
+          <span>{anchors.low}</span>
+          <span>{anchors.high}</span>
         </div>
         <div className="points">
           {points.map((p) => (
             <button
               key={p}
               type="button"
-              className={`point${selected === p ? " selected" : ""}`}
-              onClick={() => !locked && setSelected(p)}
-              disabled={locked}
-              aria-pressed={selected === p}
+              className={`point${value === p ? " selected" : ""}`}
+              onClick={() => !disabled && setValue(p)}
+              disabled={disabled}
+              aria-pressed={value === p}
             >
               {p}
             </button>
           ))}
         </div>
       </div>
+    </section>
+  );
+}
 
-      {locked ? (
-        <>
-          <div className="confirmation">
-            <p className="muted">Thanks — your response has been recorded.</p>
-            {aggregate?.revealed ? (
-              <AggregateView aggregate={aggregate} />
-            ) : (
-              <p className="muted">
-                Results will appear once enough of the class has responded.
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            className="change-mind"
-            onClick={() => setEditing(true)}
-          >
-            Change your mind?
-          </button>
-        </>
-      ) : (
-        <button className="submit" disabled={selected === null} onClick={submit}>
-          {submitted ? "Update response" : "Submit"}
-        </button>
-      )}
+function AggregateView({ aggregate, prediction, selected }) {
+  const restMean =
+    aggregate.total > 1 && aggregate.mean != null
+      ? ((aggregate.mean * aggregate.total) - selected) / (aggregate.total - 1)
+      : null;
+  const distance = restMean == null ? null : Math.abs(prediction - restMean);
+
+  return (
+    <div className="aggregate reveal-panel">
+      <div className="reveal-heading">
+        <div>
+          <span className="eyebrow">The reveal</span>
+          <h2>How did the room actually land?</h2>
+        </div>
+        <span className="response-chip">{aggregate.total} responses</span>
+      </div>
+
+      <div className="personal-comparison">
+        <div><span>You predicted</span><strong>{prediction}</strong></div>
+        <div><span>Rest-of-class average</span><strong>{restMean == null ? "—" : restMean.toFixed(1)}</strong></div>
+        <div><span>Prediction gap</span><strong>{distance == null ? "—" : `${distance.toFixed(1)} pts`}</strong></div>
+      </div>
+
+      <Distribution title="What the class thought" counts={aggregate.counts} />
+      <Distribution title="What the class expected the class to think" counts={aggregate.prediction_counts || []} secondary />
     </div>
   );
 }
 
-function AggregateView({ aggregate }) {
-  const max = Math.max(1, ...aggregate.counts);
+function Distribution({ title, counts, secondary = false }) {
+  const max = Math.max(1, ...(counts || [1]));
   return (
-    <div className="aggregate">
-      <p className="muted">
-        {aggregate.total} response{aggregate.total === 1 ? "" : "s"}
-      </p>
+    <div className={`distribution${secondary ? " secondary" : ""}`}>
+      <h3>{title}</h3>
       <div className="bars">
-        {aggregate.counts.map((c, i) => (
+        {counts.map((c, i) => (
           <div className="bar-row" key={i}>
             <span className="bar-label">{i + 1}</span>
             <div className="bar-track">

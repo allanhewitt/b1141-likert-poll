@@ -18,21 +18,21 @@ CREATE TABLE IF NOT EXISTS activities (
   active BOOLEAN NOT NULL DEFAULT true
 );
 
--- Individual submitted responses. Only written when PERSIST_RESPONSES=true
--- on the backend. Never touched by the "clear session" control — that
--- only resets the in-memory live view used during a lecture. Deliberately
--- minimal columns: respondent_token is an anonymous per-browser value,
--- not an identity — it exists only so revisions can be grouped together
--- (did this person change their mind, and to what) without ever linking
--- a response to a named student. Every submission gets its own row, even
--- a revision — nothing here is ever updated in place.
+-- Individual submitted responses. Each row now carries both the student's own
+-- position and their pre-reveal prediction of where the class overall will
+-- land. Existing deployments are migrated automatically by server.js, while
+-- this ALTER also makes the standalone schema script safe to re-run.
 CREATE TABLE IF NOT EXISTS responses (
   id SERIAL PRIMARY KEY,
   activity_id TEXT NOT NULL REFERENCES activities(id),
   respondent_token TEXT NOT NULL,
   value INTEGER NOT NULL,
+  predicted_value INTEGER,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE responses
+  ADD COLUMN IF NOT EXISTS predicted_value INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_responses_activity ON responses(activity_id);
 CREATE INDEX IF NOT EXISTS idx_responses_token ON responses(activity_id, respondent_token);

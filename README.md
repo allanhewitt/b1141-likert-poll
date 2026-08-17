@@ -1,133 +1,129 @@
 # b1141-likert-poll
 
-The `likert-response-single-question` GEDL model, built to match the
-`dummy-live-likert-poll` template and conventions: one repo, `/backend` +
-`/frontend`, HashRouter, the known CORS fix, Postgres for both config and
-(optionally) persisted responses.
+The `likert-response-single-question` GEDL model. The essential interaction is now a **paired pre-reveal commitment**:
+
+1. the student gives their own position on a bounded scale;
+2. the student predicts where the rest of the class will land on the same scale;
+3. both are committed before the cohort result is revealed;
+4. the reveal compares the actual class distribution with the distribution of class predictions.
+
+This adds productive anticipation without points, competition or surface gamification: students are waiting to discover not only **who agrees with me?** but **was my model of the room accurate?**
 
 ## Structure
 
-```
-backend/           Express + Postgres
+```text
+backend/            Express + Postgres
   server.js
-  schema.sql        Run once to create tables + seed Week One
+  schema.sql         Tables + Week One seed
   .env.example
-frontend/           React, one app, two routes
+frontend/            React + HashRouter
   src/
-    Respond.jsx      /#/respond/{id} — student view
-    Control.jsx       /#/control — lecturer view, Option A shell target
+    Respond.jsx       /#/respond/{id} — student view
+    Control.jsx       /#/control/{id} — lecturer controls
+    Display.jsx       /#/display/{id} — projector / presentation view
     styles.css
-docker-compose.yml   Local testing
+docker-compose.yml    Local testing
 ```
 
-## Why config lives in Postgres now, not a JSON file
+## Core interaction semantics
 
-Earlier drafts of this pipeline used a bundled JSON file for the question
-config. That's been dropped in favour of Postgres, in line with the
-established convention that Postgres is where "questions" and "responses"
-both live — this also means adding a future week's poll is a `psql` insert
-against the live database, not a code change requiring a rebuild.
+Each live response contains:
+
+- `value` — the student's own judgement;
+- `prediction` — where they expect the class overall to land.
+
+The prediction is not a disposable second poll. It is a **prior commitment**. Once the cohort result becomes visible, the backend freezes the prediction for that participant token. A student may still reconsider their own substantive view, but cannot rewrite the prediction after seeing the room.
+
+The aggregate therefore exposes two linked distributions:
+
+- **what the class thought**;
+- **what the class expected the class to think**.
+
+It also returns the mean of each, allowing the interface to show the gap between actual and expected cohort position.
 
 ## Persistence
 
-Controlled by one backend env var: `PERSIST_RESPONSES`.
+Controlled by `PERSIST_RESPONSES`.
 
-- `false` (default) — responses live only in memory for the duration of a
-  session, matching the original ephemeral position while ethics approval
-  is pending.
-- `true` — every submitted response is also written to the `responses`
-  table (activity id, value, timestamp — nothing else, no student
-  identifier). The in-memory session store still drives the live "this
-  lecture, right now" view and "clear session" only resets that — it never
-  deletes persisted rows.
+- `false` (default) — responses live only in memory for the current session.
+- `true` — every submission is also written to `responses`.
 
-Flip the flag and redeploy the backend to change this later; nothing else
-in the code needs to change either direction.
+Persisted rows now contain `value` and `predicted_value`. `server.js` runs a safe `ALTER TABLE ... ADD COLUMN IF NOT EXISTS predicted_value` on startup so an existing deployment migrates automatically. Historical rows created before this change simply retain `NULL` in that column.
+
+The anonymous activity-scoped browser token is used only to recognise revision within a short classroom session. It is not a student identity.
 
 ## Routes
 
-- `/#/respond/{activity-id}` — what students open. Reads the id from the
-  URL, fetches config from Postgres via the backend, renders the scale,
-  submits, polls the aggregate once submitted and revealed.
-- `/#/control/{activity-id}` — what you open, one activity at a time.
-  Same id-based pattern as the respond route, deliberately: no picker or
-  activity list, since with one activity live at a time that's unneeded
-  complexity. Shows the live aggregate for that one activity, with
-  "Reveal now" and "Clear session" controls. For Week One:
-  `/#/control/b1141-w1-if-sport-disappeared`.
+- `/#/respond/{activity-id}` — student view. Students answer **What do you think?** and **Where do you think the rest of the class will land overall?**, then lock both in.
+- `/#/control/{activity-id}` — lecturer view. Shows live response count, actual mean, predicted mean, both distributions, reveal control and session clear.
+- `/#/display/{activity-id}` — large projector view, following the presentation pattern established in the ranking/reconsideration app. Opens separately from the control screen, auto-refreshes and includes a browser fullscreen button.
 
-HashRouter is used throughout (not BrowserRouter) — Coolify's static
-hosting has no server-side rewrite rule, so direct navigation to a
-BrowserRouter route 404s. This was hit and fixed once already on the
-dummy project; baking it in from the start here avoids repeating it.
+For Week One:
 
-## Setting up the database
+```text
+/#/respond/b1141-w1-if-sport-disappeared
+/#/control/b1141-w1-if-sport-disappeared
+/#/display/b1141-w1-if-sport-disappeared
+```
+
+Before reveal, the projector screen shows the question, response count and a holding state while both distributions remain hidden. After reveal it shows the actual and predicted class distributions side by side, with the actual mean, predicted mean and expectation gap.
+
+## Reveal behaviour
+
+Existing activity config continues to determine reveal timing:
+
+- `immediate`
+- `threshold`
+- `manual`
+
+For threshold or manual activities, students see neither class distribution until the reveal condition is met. The lecturer can always use **Reveal now** from the control view.
+
+## Database setup
 
 ```sql
 CREATE DATABASE b1141_likert_poll;
 ```
 
-Then, connected to that database:
+Then:
 
 ```bash
 psql "postgres://postgres:<password>@<host>:5432/b1141_likert_poll" -f backend/schema.sql
 ```
 
-This creates `activities` and `responses`, and seeds the Week One instance
-(`b1141-w1-if-sport-disappeared`). Add future weeks with further `INSERT`
-statements against `activities` — no redeploy needed for content changes,
-only for changes to the app itself.
+The schema seeds:
 
-Per the standing convention: never truncate or reuse this database across
-academic years. Create `b1141_likert_poll_2027_28` etc. for future years
-and point that year's backend at the new one, so prior years' response
-data survives intact for longitudinal analysis.
+`b1141-w1-if-sport-disappeared`
+
+with the statement:
+
+> Sport exists more for individuals than for society.
+
+Future content remains database-configured: new activity instances can be added with `INSERT` statements without rebuilding the app.
+
+Per the standing convention, use a fresh database for each academic year rather than truncating and reusing the previous year's research data.
 
 ## Running locally
 
-Copy `backend/.env.example` to `backend/.env` and point `DATABASE_URL` at
-the real (public) Postgres URL on the Hetzner box — there's no local
-Postgres in this compose file, by design, matching how local testing is
-done elsewhere in this setup.
+Copy `backend/.env.example` to `backend/.env`, set `DATABASE_URL`, then:
 
 ```bash
 docker compose up --build
 ```
 
-- Student view: `http://localhost:5173/#/respond/b1141-w1-if-sport-disappeared`
-- Control view: `http://localhost:5173/#/control/b1141-w1-if-sport-disappeared`
+- Student: `http://localhost:5173/#/respond/b1141-w1-if-sport-disappeared`
+- Lecturer: `http://localhost:5173/#/control/b1141-w1-if-sport-disappeared`
+- Projector: `http://localhost:5173/#/display/b1141-w1-if-sport-disappeared`
 - API health: `http://localhost:4000/api/health`
 
-## Deploying to Coolify
+## Deployment
 
-Follow the repeatable workflow in `GEDL_Infrastructure_Reference.md`
-exactly — this repo is built to match it:
+The repo retains the established GEDL deployment pattern:
 
-1. Push this repo to `github.com/allanhewitt/b1141-likert-poll`
-2. Create the database and run `schema.sql` (above)
-3. Deploy backend: Base Directory `/backend`, port 4000, not a static
-   site. Environment variables: `DATABASE_URL` (internal Postgres URL this
-   time), `PORT=4000`, `ALLOWED_ORIGINS` (care needed — see the CORS note
-   below), `PERSIST_RESPONSES`.
-4. Deploy frontend: Base Directory `/frontend`, Publish Directory `/dist`,
-   port 80, tick "Is it a static site?". `VITE_API_BASE` set as **Available
-   at Buildtime**, pointing at the backend's deployed URL.
+1. backend from `/backend`, port 4000;
+2. frontend from `/frontend`, static `/dist`;
+3. `DATABASE_URL`, `PORT`, `ALLOWED_ORIGINS`, `PERSIST_RESPONSES` on the backend;
+4. `VITE_API_BASE` available at frontend build time.
 
-### CORS note
+`ALLOWED_ORIGINS=*` is handled explicitly in `server.js` to avoid the earlier wildcard-splitting CORS bug.
 
-The `ALLOWED_ORIGINS` fix from the dummy project is already baked into
-`server.js` — a literal `*` env value is passed straight through to the
-`cors` package rather than being split into `["*"]`, which the package
-would silently treat as an empty allow-list. Set `ALLOWED_ORIGINS=*` for
-now unless you want to lock it to the frontend's specific deployed origin.
-
-## Option A control shell (future work)
-
-Longer term you want one control panel across all activity types in a
-lecture, not one per model. For now, with a single activity, `/control/{id}`
-stays deliberately simple — no picker, no cross-week list. Once two or
-three models exist, the agreed path is a small shell app that steps
-through a week's activities in delivery order, embedding each model's
-`/control/{id}` view (`iframe` per activity, "next" to advance). This
-route's id-based pattern is what makes that embeddable without changes
-later — the shell just needs to know which id to point at.
+HashRouter remains deliberate: Coolify static hosting has no server-side rewrite rule, so direct BrowserRouter routes would 404.
